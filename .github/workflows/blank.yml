@@ -71,8 +71,8 @@ jobs:
           echo "🔍 Fetching versions from $FTP_URL..."
           PAGE_CONTENT=$(curl -fsSL --user-agent "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/31.0.1650.63 Safari/537.36" "$FTP_URL")
 
-          # 提取版本号 (匹配 goX.X.X/ 格式)
-          VERSIONS_FROM_FTP=$(echo "$PAGE_CONTENT" | grep -o 'href="go[0-9]\+\.[0-9]\+\(\.[0-9]\+\)\{0,1\}/"' | sed -E 's/href="(go[0-9.]+)\/".*/\1/')
+          # 提取版本号 (匹配 go-X.XX/ 格式)
+          VERSIONS_FROM_FTP=$(echo "$PAGE_CONTENT" | grep -o 'href="go-[0-9]\+\.[0-9]\+\(\.[0-9]\+\)\{0,1\}/"' | sed -E 's/href="(go-[0-9.]+)\/".*/\1/')
 
           if [ -z "$VERSIONS_FROM_FTP" ]; then
             echo "❌ No valid versions found in FTP response. Check FTP structure."
@@ -102,8 +102,8 @@ jobs:
 
             echo "✨ New version detected: $VERSION"
 
-            # 构建下载URL
-            DOWNLOAD_URL="$FTP_URL/$VERSION/"
+            # 构建下载URL (abi1.0 子目录)
+            DOWNLOAD_URL="$FTP_URL/$VERSION/abi1.0/"
 
             # 下载文件
             echo "📥 Downloading files from $DOWNLOAD_URL ..."
@@ -115,7 +115,7 @@ jobs:
             # 创建GitHub Release
             echo "📝 Creating release for $VERSION..."
             gh release create "$VERSION" --title "$VERSION" --notes "Automated release for $VERSION" --repo "$GITHUB_OWNER/$GITHUB_REPO"
-            gh release upload "$VERSION" ./toolchain/golang/"$VERSION"/* --clobber --repo "$GITHUB_OWNER/$GITHUB_REPO"
+            gh release upload "$VERSION" ./toolchain/golang/"$VERSION"/abi1.0/* --clobber --repo "$GITHUB_OWNER/$GITHUB_REPO"
 
             # 清理临时文件
             rm -rf ./toolchain/golang/"$VERSION"
