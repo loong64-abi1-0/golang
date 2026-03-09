@@ -81,10 +81,10 @@ jobs:
           VERSIONS_FROM_FTP_ARRAY=(${VERSIONS_FROM_FTP// / })
           echo "✅ Found ${#VERSIONS_FROM_FTP_ARRAY[@]} versions from FTP"
 
-          # 获取GitHub Release列表
+          # 获取GitHub Release列表 (支持分页，最多获取100个)
           echo "🔄 Fetching GitHub releases for $GITHUB_OWNER/$GITHUB_REPO..."
           RELEASES_DATA=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases")
+            "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases?per_page=100")
 
           # 提取已存在的tag names
           TAG_NAMES=$(echo "$RELEASES_DATA" | jq -r '.[].tag_name')
@@ -92,32 +92,71 @@ jobs:
           TAG_NAMES_ARRAY=(${TAG_NAMES// / })
           echo "✅ Found ${#TAG_NAMES_ARRAY[@]} existing releases in GitHub"
 
-          # 处理每个新版本
+          # 处理每个主版本目录
           for VERSION in $VERSIONS_FROM_FTP; do
-            # 检查是否已存在
-            if echo "$TAG_NAMES" | grep -q "^$VERSION$"; then
-              echo "ℹ️  Version $VERSION already exists in GitHub. Skipping."
+            echo "🔍 Scanning patch versions in $VERSION/abi1.0/..."
+
+            # 获取 abi1.0 目录下的文件列表
+            ABI_URL="$FTP_URL/$VERSION/abi1.0/"
+            ABI_PAGE=$(curl -fsSL --user-agent "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/31.0.1650.63 Safari/537.36" "$ABI_URL")
+
+            # 从文件名中提取补丁版本号 (匹配 goX.Y.Z 格式, 例如 go1.19.11)
+            PATCH_VERSIONS=$(echo "$ABI_PAGE" | grep -oE 'href="go[0-9]+\.[0-9]+\.[0-9]+\.' | sed -E 's/href="(go[0-9]+\.[0-9]+\.[0-9]+)\..*/\1/' | sort -u)
+
+            if [ -z "$PATCH_VERSIONS" ]; then
+              echo "⚠️  No patch versions found in $ABI_URL. Skipping."
               continue
             fi
 
-            echo "✨ New version detected: $VERSION"
+            # 处理每个补丁版本
+            for PATCH_VERSION in $PATCH_VERSIONS; do
+              # 检查该补丁版本是否已存在
+              if echo "$TAG_NAMES" | grep -q "^$PATCH_VERSION$"; then
+                echo "ℹ️  Patch version $PATCH_VERSION already exists in GitHub. Skipping."
+                continue
+              fi
 
-            # 构建下载URL (abi1.0 子目录)
-            DOWNLOAD_URL="$FTP_URL/$VERSION/abi1.0/"
+              echo "✨ New patch version detected: $PATCH_VERSION"
 
-            # 下载文件
-            echo "📥 Downloading files from $DOWNLOAD_URL ..."
-            if ! wget --header="User-Agent: Mozilla/5.0 (Windows NT 6.0) AppleWebKit/537.11 (KHTML, like Gecko) Chrome/23.0.1271.97 Safari/537.11" -q -np -nH -r "$DOWNLOAD_URL"; then
-              echo "❌ Download failed for $DOWNLOAD_URL"
-              exit 1
-            fi
+              # 下载该补丁版本的所有文件
+              DOWNLOAD_DIR="./toolchain/golang/$VERSION/abi1.0"
+              mkdir -p "$DOWNLOAD_DIR"
 
-            # 创建GitHub Release
-            echo "📝 Creating release for $VERSION..."
-            gh release create "$VERSION" --title "$VERSION" --notes "Automated release for $VERSION" --repo "$GITHUB_OWNER/$GITHUB_REPO"
-            gh release upload "$VERSION" ./toolchain/golang/"$VERSION"/abi1.0/* --clobber --repo "$GITHUB_OWNER/$GITHUB_REPO"
+              echo "📥 Downloading files for $PATCH_VERSION from $ABI_URL ..."
+              # 获取该补丁版本的所有文件名
+              PATCH_FILES=$(echo "$ABI_PAGE" | grep -o "href=\"${PATCH_VERSION}\.[^\"]*\"" | sed -E 's/href="([^"]+)".*/\1/')
 
-            # 清理临时文件
+              if [ -z "$PATCH_FILES" ]; then
+                echo "⚠️  No files found for $PATCH_VERSION. Skipping."
+                continue
+              fi
+
+              DOWNLOAD_SUCCESS=true
+              for PATCH_FILE in $PATCH_FILES; do
+                FILE_URL="${ABI_URL}${PATCH_FILE}"
+                echo "  ↓ $FILE_URL"
+                if ! wget --header="User-Agent: Mozilla/5.0 (Windows NT 6.0) AppleWebKit/537.11 (KHTML, like Gecko) Chrome/23.0.1271.97 Safari/537.11" -q -P "$DOWNLOAD_DIR" "$FILE_URL"; then
+                  echo "❌ Download failed for $FILE_URL"
+                  DOWNLOAD_SUCCESS=false
+                  break
+                fi
+              done
+
+              if [ "$DOWNLOAD_SUCCESS" = false ]; then
+                [ -n "$DOWNLOAD_DIR" ] && [ -n "$PATCH_VERSION" ] && rm -f "${DOWNLOAD_DIR:?}/${PATCH_VERSION:?}".*
+                continue
+              fi
+
+              # 创建GitHub Release (以补丁版本号为tag)
+              echo "📝 Creating release for $PATCH_VERSION..."
+              gh release create "$PATCH_VERSION" --title "$PATCH_VERSION" --notes "Automated release for $PATCH_VERSION" --repo "$GITHUB_OWNER/$GITHUB_REPO"
+              gh release upload "$PATCH_VERSION" "$DOWNLOAD_DIR/$PATCH_VERSION".* --clobber --repo "$GITHUB_OWNER/$GITHUB_REPO"
+
+              # 清理该补丁版本的临时文件
+              [ -n "$DOWNLOAD_DIR" ] && [ -n "$PATCH_VERSION" ] && rm -f "${DOWNLOAD_DIR:?}/${PATCH_VERSION:?}".*
+            done
+
+            # 清理版本目录
             rm -rf ./toolchain/golang/"$VERSION"
           done
 
